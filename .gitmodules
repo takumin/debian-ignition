@@ -1,0 +1,3 @@
+[submodule "ignition"]
+	path = ignition
+	url = https://github.com/coreos/ignition.git
