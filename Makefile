@@ -8,6 +8,8 @@ SUITE          ?= stable
 VARIANT        ?= apt
 ARCHITECTURES  ?= amd64
 COMPONENTS     ?= main,contrib,non-free
+DISK_SIZE      ?= 8G
+NBD_DEVICE     ?= /dev/nbd0
 
 # packages
 INCLUDE_PACKAGES ?=
@@ -57,7 +59,7 @@ IGNITION_LDFLAGS    := -X $(IGNITION_REPOSITORY)/v2/internal/version.Raw=$(IGNIT
 ################################################################################
 
 .PHONY: default
-default: clean ignition rootfs
+default: clean builder ignition rootfs initrd diskimg
 
 ################################################################################
 # builder
@@ -136,7 +138,35 @@ rootfs:
 		--customize-hook='chroot $$1 dpkg -l | sed -E "1,5d" | awk "{print \$$2 \"\t\" \$$3}" > /tmp/rootfs.manifests' \
 		--hook-directory='/usr/share/mmdebstrap/hooks' \
 		'$(SUITE)' '/tmp/rootfs' '$(APT_MIRROR_URL)'
+
+################################################################################
+# initrd
+################################################################################
+
+.PHONY: initrd
+initrd:
 	@cd /tmp/rootfs && sudo find . -type f -print | sudo cpio -ov | pixz > /tmp/rootfs.cpio.xz
+
+################################################################################
+# diskimg
+################################################################################
+
+.PHONY: diskimg
+diskimg:
+	@sudo qemu-nbd -d $(NBD_DEVICE)
+	@qemu-img create -f qcow2 /tmp/rootfs.qcow2 $(DISK_SIZE)
+	@lsmod | grep nbd >/dev/null || sudo modprobe nbd
+	@sudo qemu-nbd -c $(NBD_DEVICE) /tmp/rootfs.qcow2
+	@sudo sgdisk -Z $(NBD_DEVICE)
+	@sudo sgdisk -o $(NBD_DEVICE)
+	@sudo sgdisk -a 1 -n 1::2047 -c 1:BIOS -t 1:ef02 $(NBD_DEVICE)
+	@sudo sgdisk -n 2::+512M -c 2:ESP -t 2:ef00 $(NBD_DEVICE)
+	@sudo sgdisk -n 3::-1 -c 3:ROOT -t 3:8300 $(NBD_DEVICE)
+	@sudo sleep 1
+	@sudo mkfs.vfat -F 32 -n ESP $(NBD_DEVICE)p2
+	@sudo mkfs.xfs -f -L ROOT $(NBD_DEVICE)p3
+	@echo "TODO"
+	@sudo qemu-nbd -d $(NBD_DEVICE)
 
 ################################################################################
 # clean
@@ -147,4 +177,5 @@ clean:
 	@docker system prune -f
 	@docker volume prune -f
 	@git -C ignition clean -xdf
+	@sudo qemu-nbd -d $(NBD_DEVICE)
 	@sudo rm -fr /tmp/rootfs*
